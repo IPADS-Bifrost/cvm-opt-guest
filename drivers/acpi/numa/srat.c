@@ -234,6 +234,10 @@ void __init acpi_numa_slit_init(struct acpi_table_slit *slit)
 	}
 }
 
+#ifdef CONFIG_CVM_ZEROCOPY
+extern struct memblock_region isolate_region[];
+#endif
+
 /*
  * Default callback for parsing of the Proximity Domain <-> Memory
  * Area mappings
@@ -269,6 +273,7 @@ acpi_numa_memory_affinity_init(struct acpi_srat_mem_affinity *ma)
 		goto out_err_bad_srat;
 	}
 
+#ifndef CONFIG_CVM_ZEROCOPY
 	if (numa_add_memblk(node, start, end) < 0) {
 		pr_err("SRAT: Failed to add memblk to node %u [mem %#010Lx-%#010Lx]\n",
 		       node, (unsigned long long) start,
@@ -283,6 +288,63 @@ acpi_numa_memory_affinity_init(struct acpi_srat_mem_affinity *ma)
 		(unsigned long long) start, (unsigned long long) end - 1,
 		hotpluggable ? " hotplug" : "",
 		ma->flags & ACPI_SRAT_MEM_NON_VOLATILE ? " non-volatile" : "");
+#else
+	if (start >= 0x100000000 && node == 0) {
+		node_set(0, numa_nodes_parsed);
+		/* RX uses nid 1, TX uses nid 2 */
+		node_set(NUMA_TX_NODE, numa_nodes_parsed);
+		node_set(NUMA_RX_NODE, numa_nodes_parsed);
+		/* Reserve [8G, 9G) memory as fake numa node */
+		// isolate_region[NUMA_TX_NODE].base = (8UL << 30);
+		// isolate_region[NUMA_TX_NODE].size = (1UL << 30) / 2;
+		// isolate_region[NUMA_TX_NODE].nid = NUMA_TX_NODE;
+		// isolate_region[NUMA_RX_NODE].base = (8UL << 30) + (1UL << 30) / 2;
+		// isolate_region[NUMA_RX_NODE].size = (1UL << 30) / 2;
+		// isolate_region[NUMA_RX_NODE].nid = NUMA_RX_NODE;
+		numa_add_memblk(0, 0, isolate_region[NUMA_TX_NODE].base);
+		numa_add_memblk(0, isolate_region[NUMA_RX_NODE].base + isolate_region[NUMA_RX_NODE].size, PFN_PHYS(max_pfn));
+		numa_add_memblk(NUMA_TX_NODE, isolate_region[NUMA_TX_NODE].base, isolate_region[NUMA_TX_NODE].base + isolate_region[NUMA_TX_NODE].size);
+		numa_add_memblk(NUMA_RX_NODE, isolate_region[NUMA_RX_NODE].base, isolate_region[NUMA_RX_NODE].base + isolate_region[NUMA_RX_NODE].size);
+		pr_info("SRAT: Node %u PXM %u [mem %#010Lx-%#010Lx]%s%s\n",
+			node, pxm,
+			(unsigned long long) start, (unsigned long long) (isolate_region[NUMA_TX_NODE].base - 1),
+			hotpluggable ? " hotplug" : "",
+			ma->flags & ACPI_SRAT_MEM_NON_VOLATILE ? " non-volatile" : "");
+		pr_info("SRAT: Node %u PXM %u [mem %#010Lx-%#010Lx]%s%s\n",
+			node, pxm,
+			(unsigned long long) (isolate_region[NUMA_RX_NODE].base + isolate_region[NUMA_RX_NODE].size), (unsigned long long) end - 1,
+			hotpluggable ? " hotplug" : "",
+			ma->flags & ACPI_SRAT_MEM_NON_VOLATILE ? " non-volatile" : "");
+		pr_info("SRAT: Node %u PXM %u [mem %#010Lx-%#010Lx]%s%s\n",
+			NUMA_TX_NODE, pxm,
+			(unsigned long long) isolate_region[NUMA_TX_NODE].base,
+			(unsigned long long) isolate_region[NUMA_TX_NODE].base + isolate_region[NUMA_TX_NODE].size - 1,
+			hotpluggable ? " hotplug" : "",
+			ma->flags & ACPI_SRAT_MEM_NON_VOLATILE ? " non-volatile" : "");
+		pr_info("SRAT: Node %u PXM %u [mem %#010Lx-%#010Lx]%s%s\n",
+			NUMA_RX_NODE, pxm,
+			(unsigned long long) isolate_region[NUMA_RX_NODE].base,
+			(unsigned long long) isolate_region[NUMA_RX_NODE].base + isolate_region[NUMA_RX_NODE].size - 1,
+			hotpluggable ? " hotplug" : "",
+			ma->flags & ACPI_SRAT_MEM_NON_VOLATILE ? " non-volatile" : "");
+	} else {
+		if (numa_add_memblk(node, start, end) < 0) {
+		pr_err("SRAT: Failed to add memblk to node %u [mem %#010Lx-%#010Lx]\n",
+		       node, (unsigned long long) start,
+		       (unsigned long long) end - 1);
+		goto out_err_bad_srat;
+			node_set(node, numa_nodes_parsed);
+
+		pr_info("SRAT: Node %u PXM %u [mem %#010Lx-%#010Lx]%s%s\n",
+			node, pxm,
+			(unsigned long long) start, (unsigned long long) end - 1,
+			hotpluggable ? " hotplug" : "",
+			ma->flags & ACPI_SRAT_MEM_NON_VOLATILE ? " non-volatile" : "");
+		}
+	}
+
+
+#endif
 
 	/* Mark hotplug range in memblock. */
 	if (hotpluggable && memblock_mark_hotplug(start, ma->length))

@@ -281,6 +281,11 @@ struct bpf_prog;
 union bpf_attr;
 struct skb_ext;
 
+#ifdef CONFIG_CVM_ZEROCOPY
+struct virtio_device;
+extern struct virtio_device *virtnet_vdev;
+#endif
+
 #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
 struct nf_bridge_info {
 	enum {
@@ -1234,8 +1239,13 @@ void kfree_skb_partial(struct sk_buff *skb, bool head_stolen);
 bool skb_try_coalesce(struct sk_buff *to, struct sk_buff *from,
 		      bool *fragstolen, int *delta_truesize);
 
+#ifdef CONFIG_CVM_ZEROCOPY
+struct sk_buff *__vdev_alloc_skb(struct virtio_device *vdev, unsigned int size,
+                gfp_t priority, int flags, int node);
+#else
 struct sk_buff *__alloc_skb(unsigned int size, gfp_t priority, int flags,
 			    int node);
+#endif
 struct sk_buff *__build_skb(void *data, unsigned int frag_size);
 struct sk_buff *build_skb(void *data, unsigned int frag_size);
 struct sk_buff *build_skb_around(struct sk_buff *skb,
@@ -1243,6 +1253,20 @@ struct sk_buff *build_skb_around(struct sk_buff *skb,
 void skb_attempt_defer_free(struct sk_buff *skb);
 
 struct sk_buff *napi_build_skb(void *data, unsigned int frag_size);
+
+#ifdef CONFIG_CVM_ZEROCOPY
+static inline struct sk_buff *__alloc_skb(unsigned int size, gfp_t priority,
+                int flags, int node)
+{
+    return __vdev_alloc_skb(NULL, size, priority, flags, node);
+}
+
+static inline struct sk_buff *vdev_alloc_skb(struct virtio_device *vdev,
+					unsigned int size, gfp_t priority, int flags, int node)
+{
+	return __vdev_alloc_skb(vdev, size, priority, flags, node);
+}
+#endif
 
 /**
  * alloc_skb - allocate a network buffer
@@ -1306,6 +1330,16 @@ static inline struct sk_buff *alloc_skb_fclone(unsigned int size,
 {
 	return __alloc_skb(size, priority, SKB_ALLOC_FCLONE, NUMA_NO_NODE);
 }
+
+#ifdef CONFIG_CVM_ZEROCOPY
+
+static inline struct sk_buff *alloc_skb_fclone_isolated(unsigned int size,
+					       gfp_t priority, int node)
+{
+	return vdev_alloc_skb(virtnet_vdev, size, priority, SKB_ALLOC_FCLONE, node);
+}
+
+#endif
 
 struct sk_buff *skb_morph(struct sk_buff *dst, struct sk_buff *src);
 void skb_headers_offset_update(struct sk_buff *skb, int off);
@@ -3439,7 +3473,14 @@ static inline void skb_frag_set_page(struct sk_buff *skb, int f,
 	__skb_frag_set_page(&skb_shinfo(skb)->frags[f], page);
 }
 
+#ifdef CONFIG_CVM_ZEROCOPY
+#define skb_page_frag_refill(sz, pfrag, prio) \
+		vdev_skb_page_frag_refill(NULL, sz, pfrag, prio, 0)
+bool vdev_skb_page_frag_refill(struct virtio_device *vdev,
+        unsigned int sz, struct page_frag *pfrag, gfp_t prio, int node);
+#else
 bool skb_page_frag_refill(unsigned int sz, struct page_frag *pfrag, gfp_t prio);
+#endif
 
 /**
  * skb_frag_dma_map - maps a paged fragment via the DMA API

@@ -23,6 +23,12 @@
 #include <net/xdp.h>
 #include <net/net_failover.h>
 
+#ifdef CONFIG_CVM_ZEROCOPY
+#include <linux/genalloc.h>
+#include <linux/gfp_types.h>
+#include <linux/io.h>
+#endif
+
 static int napi_weight = NAPI_POLL_WEIGHT;
 module_param(napi_weight, int, 0444);
 
@@ -361,8 +367,14 @@ static struct page *get_a_page(struct receive_queue *rq, gfp_t gfp_mask)
 		rq->pages = (struct page *)p->private;
 		/* clear private here, it is used to chain pages */
 		p->private = 0;
+#ifdef CONFIG_CVM_ZEROCOPY
+    } else {
+		p = alloc_pages_node(NUMA_TX_NODE, gfp_mask | ___GFP_FORCE_NID, 0);
+    }
+#else
 	} else
 		p = alloc_page(gfp_mask);
+#endif
 	return p;
 }
 
@@ -477,6 +489,7 @@ static struct sk_buff *page_to_skb(struct virtnet_info *vi,
 
 	shinfo_size = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 
+#ifndef CONFIG_CVM_ZEROCOPY
 	/* copy small packet so we can reuse these pages */
 	if (!NET_IP_ALIGN && len > GOOD_COPY_LEN && tailroom >= shinfo_size) {
 		skb = build_skb(buf, truesize);
@@ -491,6 +504,7 @@ static struct sk_buff *page_to_skb(struct virtnet_info *vi,
 			give_pages(rq, page);
 		goto ok;
 	}
+#endif
 
 	/* copy small packet so we can reuse these pages for small data */
 	skb = napi_alloc_skb(&rq->napi, GOOD_COPY_LEN);
@@ -1148,7 +1162,11 @@ skip_xdp:
 
 		num_skb_frags = skb_shinfo(curr_skb)->nr_frags;
 		if (unlikely(num_skb_frags == MAX_SKB_FRAGS)) {
+#ifdef CONFIG_CVM_ZEROCOPY
+			struct sk_buff *nskb = vdev_alloc_skb(vi->vdev, 0, GFP_ATOMIC, 0, NUMA_RX_NODE);
+#else
 			struct sk_buff *nskb = alloc_skb(0, GFP_ATOMIC);
+#endif
 
 			if (unlikely(!nskb))
 				goto err_skb;
@@ -1310,7 +1328,11 @@ static int add_recvbuf_small(struct virtnet_info *vi, struct receive_queue *rq,
 
 	len = SKB_DATA_ALIGN(len) +
 	      SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+#ifdef CONFIG_CVM_ZEROCOPY
+	if (unlikely(!vdev_skb_page_frag_refill(virtnet_vdev, len, alloc_frag, gfp | ___GFP_FORCE_NID, NUMA_RX_NODE)))
+#else
 	if (unlikely(!skb_page_frag_refill(len, alloc_frag, gfp)))
+#endif
 		return -ENOMEM;
 
 	buf = (char *)page_address(alloc_frag->page) + alloc_frag->offset;
@@ -1407,7 +1429,11 @@ static int add_recvbuf_mergeable(struct virtnet_info *vi,
 	 * disabled GSO for XDP, it won't be a big issue.
 	 */
 	len = get_mergeable_buf_len(rq, &rq->mrg_avg_pkt_len, room);
+#ifdef CONFIG_CVM_ZEROCOPY
+	if (unlikely(!vdev_skb_page_frag_refill(virtnet_vdev, len, alloc_frag, gfp | ___GFP_FORCE_NID, NUMA_RX_NODE)))
+#else
 	if (unlikely(!skb_page_frag_refill(len + room, alloc_frag, gfp)))
+#endif
 		return -ENOMEM;
 
 	buf = (char *)page_address(alloc_frag->page) + alloc_frag->offset;
@@ -3715,6 +3741,47 @@ static int virtnet_validate(struct virtio_device *vdev)
 	return 0;
 }
 
+#ifdef CONFIG_CVM_ZEROCOPY
+struct virtio_device *virtnet_vdev = NULL;
+EXPORT_SYMBOL(virtnet_vdev);
+extern struct memblock_region isolate_region[];
+static int vdev_fill_zc_mempool(struct virtio_device *vdev)
+{
+    phys_addr_t pool_pa = isolate_region[NUMA_TX_NODE].base;
+    size_t pool_size = isolate_region[NUMA_TX_NODE].size + isolate_region[NUMA_RX_NODE].size;
+    vdev->zc_mempool_va = memremap(pool_pa, pool_size, MEMREMAP_WB);
+    if (IS_ERR(vdev->zc_mempool_va)) {
+        pr_err("%s:%d failed to memremap zc_mempool\n",
+                __func__, __LINE__);
+        return PTR_ERR(vdev->zc_mempool_va);
+    }
+    pr_err("%s:%d memremap va %px, pa %llx\n",
+            __func__, __LINE__, vdev->zc_mempool_va, pool_pa);
+    // printk("\t content from QEMU %x %x %x\n",
+    //         *(int *)vdev->zc_mempool_va, *(int *)(vdev->zc_mempool_va + (1UL << 29)),
+    //         *(int *)(vdev->zc_mempool_va + (1UL << 30) - 8));
+    // *(int *)vdev->zc_mempool_va = 0;
+    // *(int *)(vdev->zc_mempool_va + (1UL << 29)) = 0;
+    // *(int *)(vdev->zc_mempool_va + (1UL << 30) - 8) = 0;
+  
+    vdev->zc_mempool = devm_gen_pool_create(&vdev->dev, PAGE_SHIFT,
+            NUMA_NO_NODE, "virtnet-zc-alloc");
+    if (IS_ERR(vdev->zc_mempool))
+        return PTR_ERR(vdev->zc_mempool);
+
+    virtnet_vdev = vdev;
+	set_memory_decrypted(vdev->zc_mempool_va, pool_size >> PAGE_SHIFT);
+
+    return 0;
+}
+
+static void vdev_free_zc_mempool(struct virtio_device *vdev)
+{
+    gen_pool_destroy(vdev->zc_mempool);
+    memunmap(vdev->zc_mempool_va);
+}
+#endif
+
 static int virtnet_probe(struct virtio_device *vdev)
 {
 	int i, err = -ENOMEM;
@@ -3722,6 +3789,12 @@ static int virtnet_probe(struct virtio_device *vdev)
 	struct virtnet_info *vi;
 	u16 max_queue_pairs;
 	int mtu;
+
+#ifdef CONFIG_CVM_ZEROCOPY
+	vdev_fill_zc_mempool(vdev);
+	// set_memory_decrypted(__va(isolate_region[NUMA_TX_NODE].base), isolate_region[NUMA_TX_NODE].size >> PAGE_SHIFT);
+	// set_memory_decrypted(__va(isolate_region[NUMA_RX_NODE].base), isolate_region[NUMA_RX_NODE].size >> PAGE_SHIFT);
+#endif
 
 	/* Find if host supports multiqueue/rss virtio_net device */
 	max_queue_pairs = 1;
@@ -4011,6 +4084,10 @@ static void virtnet_remove(struct virtio_device *vdev)
 	remove_vq_common(vi);
 
 	free_netdev(vi->dev);
+
+#ifdef CONFIG_CVM_ZEROCOPY
+    vdev_free_zc_mempool(vdev);
+#endif
 }
 
 static __maybe_unused int virtnet_freeze(struct virtio_device *vdev)

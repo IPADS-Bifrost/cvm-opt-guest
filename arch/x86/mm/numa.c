@@ -11,6 +11,9 @@
 #include <linux/nodemask.h>
 #include <linux/sched.h>
 #include <linux/topology.h>
+#ifdef CONFIG_CVM_ZEROCOPY
+#include <linux/set_memory.h>
+#endif
 
 #include <asm/e820/api.h>
 #include <asm/proto.h>
@@ -57,6 +60,9 @@ s16 __apicid_to_node[MAX_LOCAL_APIC] = {
 int numa_cpu_node(int cpu)
 {
 	int apicid = early_per_cpu(x86_cpu_to_apicid, cpu);
+#ifdef CONFIG_CVM_ZEROCOPY
+	return 0;
+#endif
 
 	if (apicid != BAD_APICID)
 		return __apicid_to_node[apicid];
@@ -204,7 +210,11 @@ static void __init alloc_node_data(int nid)
 	 * Allocate node data.  Try node-local memory and then any node.
 	 * Never allocate in DMA zone.
 	 */
+#ifdef CONFIG_CVM_ZEROCOPY
+	nd_pa = memblock_phys_alloc_try_nid(nd_size, SMP_CACHE_BYTES, 0);
+#else
 	nd_pa = memblock_phys_alloc_try_nid(nd_size, SMP_CACHE_BYTES, nid);
+#endif
 	if (!nd_pa) {
 		pr_err("Cannot find %zu bytes in any node (initial node: %d)\n",
 		       nd_size, nid);
@@ -693,6 +703,23 @@ static int __init numa_init(int (*init_func)(void))
 	return 0;
 }
 
+#ifdef CONFIG_CVM_ZEROCOPY
+struct memblock_region isolate_region[3] = {{
+        .base = 0,
+        .size = 0,
+        .nid = NUMA_NO_NODE,
+}, {
+        .base = 8UL << 30,
+        .size = (1UL << 30) / 2,
+        .nid = NUMA_TX_NODE,
+}, {
+        .base = (8UL << 30) + (1UL << 30) / 2,
+        .size = (1UL << 30) / 2,
+        .nid = NUMA_RX_NODE,
+}};
+EXPORT_SYMBOL(isolate_region);
+#endif
+
 /**
  * dummy_numa_init - Fallback dummy NUMA init
  *
@@ -709,11 +736,68 @@ static int __init dummy_numa_init(void)
 	printk(KERN_INFO "Faking a node at [mem %#018Lx-%#018Lx]\n",
 	       0LLU, PFN_PHYS(max_pfn) - 1);
 
+#ifndef CONFIG_CVM_ZEROCOPY
 	node_set(0, numa_nodes_parsed);
 	numa_add_memblk(0, 0, PFN_PHYS(max_pfn));
+#else
+	node_set(0, numa_nodes_parsed);
+	/* RX uses nid 1, TX uses nid 2 */
+	node_set(NUMA_TX_NODE, numa_nodes_parsed);
+	node_set(NUMA_RX_NODE, numa_nodes_parsed);
+	/* Reserve [8G, 9G) memory as fake numa node */
+	// isolate_region[NUMA_TX_NODE].base = (8UL << 30);
+	// isolate_region[NUMA_TX_NODE].size = (1UL << 30) / 2;
+	// isolate_region[NUMA_TX_NODE].nid = NUMA_TX_NODE;
+	// isolate_region[NUMA_RX_NODE].base = (8UL << 30) + (1UL << 30) / 2;
+	// isolate_region[NUMA_RX_NODE].size = (1UL << 30) / 2;
+	// isolate_region[NUMA_RX_NODE].nid = NUMA_RX_NODE;
+	numa_add_memblk(0, 0, isolate_region[NUMA_TX_NODE].base);
+	numa_add_memblk(0, isolate_region[NUMA_RX_NODE].base + isolate_region[NUMA_RX_NODE].size, PFN_PHYS(max_pfn));
+	numa_add_memblk(NUMA_TX_NODE, isolate_region[NUMA_TX_NODE].base, isolate_region[NUMA_TX_NODE].base + isolate_region[NUMA_TX_NODE].size);
+	numa_add_memblk(NUMA_RX_NODE, isolate_region[NUMA_RX_NODE].base, isolate_region[NUMA_RX_NODE].base + isolate_region[NUMA_RX_NODE].size);
+	// set_memory_decrypted(__va(isolate_region[NUMA_TX_NODE].base), isolate_region[NUMA_TX_NODE].size >> PAGE_SHIFT);
+	// set_memory_decrypted(__va(isolate_region[NUMA_RX_NODE].base), isolate_region[NUMA_RX_NODE].size >> PAGE_SHIFT);
+#endif
 
 	return 0;
 }
+
+#ifdef CONFIG_CVM_ZEROCOPY
+static int __init early_parse_zcionuma(char *p)
+{
+	char *oldp;
+	u64 start_at, mem_size;
+
+	if (!p)
+		return -EINVAL;
+
+	oldp = p;
+	mem_size = memparse(p, &p);
+	if (p == oldp)
+		return -EINVAL;
+
+	if (*p == '@') {
+		start_at = memparse(p+1, &p);
+		// memblock_add(start_at, mem_size);
+		pr_info("zcionuma 0x%llx 0x%llx\n", start_at, mem_size);
+		isolate_region[NUMA_TX_NODE].base = (start_at);
+		isolate_region[NUMA_TX_NODE].size = (mem_size) / 2;
+		isolate_region[NUMA_TX_NODE].nid = NUMA_TX_NODE;
+		isolate_region[NUMA_RX_NODE].base = (start_at) + (mem_size) / 2;
+		isolate_region[NUMA_RX_NODE].size = (mem_size) / 2;
+		isolate_region[NUMA_RX_NODE].nid = NUMA_RX_NODE;
+	}else {
+		pr_err("\"zcionuma\" invalid format!\n");
+		return -EINVAL;
+	}
+
+	if (*p == '\0') {
+		return 0;
+	} else
+		return -EINVAL;
+}
+early_param("zcionuma", early_parse_zcionuma);
+#endif
 
 /**
  * x86_numa_init - Initialize NUMA

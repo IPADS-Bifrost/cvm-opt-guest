@@ -75,6 +75,9 @@
 #include <linux/khugepaged.h>
 #include <linux/buffer_head.h>
 #include <linux/delayacct.h>
+#ifdef CONFIG_CVM_ZEROCOPY
+#include <linux/set_memory.h>
+#endif
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -1620,10 +1623,22 @@ static void free_one_page(struct zone *zone,
 	spin_unlock_irqrestore(&zone->lock, flags);
 }
 
+#ifdef CONFIG_CVM_ZEROCOPY
+extern struct memblock_region isolate_region[];
+#endif
 static void __meminit __init_single_page(struct page *page, unsigned long pfn,
 				unsigned long zone, int nid)
 {
 	mm_zero_struct_page(page);
+#ifdef CONFIG_CVM_ZEROCOPY
+	if ((isolate_region[NUMA_TX_NODE].base >> PAGE_SHIFT) <= pfn &&
+            pfn < ((isolate_region[NUMA_TX_NODE].base + isolate_region[NUMA_TX_NODE].size) >> PAGE_SHIFT)) {
+        nid = NUMA_TX_NODE;
+    } else if ((isolate_region[NUMA_RX_NODE].base >> PAGE_SHIFT) <= pfn &&
+            pfn < ((isolate_region[NUMA_RX_NODE].base + isolate_region[NUMA_RX_NODE].size) >> PAGE_SHIFT)) {
+        nid = NUMA_RX_NODE;
+    }
+#endif
 	set_page_links(page, zone, nid, pfn);
 	init_page_count(page);
 	page_mapcount_reset(page);
@@ -5483,6 +5498,15 @@ struct page *__alloc_pages(gfp_t gfp, unsigned int order, int preferred_nid,
 	unsigned int alloc_flags = ALLOC_WMARK_LOW;
 	gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
+#ifdef CONFIG_CVM_ZEROCOPY
+	if (preferred_nid != 0 && (gfp & ___GFP_FORCE_NID) == 0) {
+		// pr_warn("Alloc req to nid %d without ___GFP_FORCE_NID flag, transfer to nid 0\n", preferred_nid);
+		preferred_nid = 0;
+	}
+	if (unlikely((gfp & ___GFP_FORCE_NID) && preferred_nid <= 0)) {
+		// pr_warn("Alloc req with ___GFP_FORCE_NID flag but do not specify fake numa\n");
+	}
+#endif
 
 	/*
 	 * There are several places where we assume that the order value is sane
@@ -6416,6 +6440,20 @@ static void build_zonelists(pg_data_t *pgdat)
 		node_order[nr_nodes++] = node;
 		prev_node = node;
 	}
+#ifdef CONFIG_CVM_ZEROCOPY
+	if (local_node == NUMA_TX_NODE) {
+		nr_nodes = 1;
+		node_order[0] = NUMA_TX_NODE;
+	}
+	if (local_node == NUMA_RX_NODE) {
+		nr_nodes = 1;
+		node_order[0] = NUMA_RX_NODE;
+	}
+	if (local_node == 0) {
+		nr_nodes = 1;
+		node_order[0] = 0;
+	}
+#endif
 
 	build_zonelists_in_node_order(pgdat, node_order, nr_nodes);
 	build_thisnode_zonelists(pgdat);

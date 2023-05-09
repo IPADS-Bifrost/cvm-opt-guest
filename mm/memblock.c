@@ -1010,6 +1010,11 @@ static bool should_skip_region(struct memblock_type *type,
 	if (!(flags & MEMBLOCK_DRIVER_MANAGED) && memblock_is_driver_managed(m))
 		return true;
 
+#ifdef CONFIG_CVM_ZEROCOPY
+	if (nid > 0)
+		return true;
+#endif
+
 	return false;
 }
 
@@ -1380,6 +1385,9 @@ phys_addr_t __init memblock_alloc_range_nid(phys_addr_t size,
 	if (WARN_ONCE(nid == MAX_NUMNODES, "Usage of MAX_NUMNODES is deprecated. Use NUMA_NO_NODE instead\n"))
 		nid = NUMA_NO_NODE;
 
+#ifdef CONFIG_CVM_ZEROCOPY
+	nid = 0;
+#endif
 	if (!align) {
 		/* Can't use WARNs this early in boot on powerpc */
 		dump_stack();
@@ -1465,6 +1473,9 @@ phys_addr_t __init memblock_phys_alloc_range(phys_addr_t size,
  */
 phys_addr_t __init memblock_phys_alloc_try_nid(phys_addr_t size, phys_addr_t align, int nid)
 {
+#ifdef CONFIG_CVM_ZEROCOPY
+	nid = 0;
+#endif
 	return memblock_alloc_range_nid(size, align, 0,
 					MEMBLOCK_ALLOC_ACCESSIBLE, nid, false);
 }
@@ -1495,6 +1506,9 @@ static void * __init memblock_alloc_internal(
 				int nid, bool exact_nid)
 {
 	phys_addr_t alloc;
+#ifdef CONFIG_CVM_ZEROCOPY
+	nid = 0;
+#endif
 
 	/*
 	 * Detect any accidental use of these APIs after slab is ready, as at

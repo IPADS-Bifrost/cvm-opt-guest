@@ -141,6 +141,14 @@
 
 #include <linux/ethtool.h>
 
+#ifdef CONFIG_CVM_ZEROCOPY
+#include <linux/genalloc.h>
+#include <linux/virtio.h>
+
+#include "../../../mm/internal.h" // for prep_compound_page
+#include <linux/memblock.h>
+#endif
+
 #include "dev.h"
 
 static DEFINE_MUTEX(proto_list_mutex);
@@ -2768,7 +2776,12 @@ DEFINE_STATIC_KEY_FALSE(net_high_order_alloc_disable_key);
  * no guarantee that allocations succeed. Therefore, @sz MUST be
  * less or equal than PAGE_SIZE.
  */
+#ifdef CONFIG_CVM_ZEROCOPY
+bool vdev_skb_page_frag_refill(struct virtio_device *vdev,
+        unsigned int sz, struct page_frag *pfrag, gfp_t gfp, int node)
+#else
 bool skb_page_frag_refill(unsigned int sz, struct page_frag *pfrag, gfp_t gfp)
+#endif
 {
 	if (pfrag->page) {
 		if (page_ref_count(pfrag->page) == 1) {
@@ -2783,28 +2796,59 @@ bool skb_page_frag_refill(unsigned int sz, struct page_frag *pfrag, gfp_t gfp)
 	pfrag->offset = 0;
 	if (SKB_FRAG_PAGE_ORDER &&
 	    !static_branch_unlikely(&net_high_order_alloc_disable_key)) {
+#ifdef CONFIG_CVM_ZEROCOPY
+		if (gfp & ___GFP_FORCE_NID) {
+			pfrag->page = alloc_pages_node(node, (gfp & ~__GFP_DIRECT_RECLAIM) |
+				__GFP_COMP | __GFP_NOWARN |
+				__GFP_NORETRY,
+				SKB_FRAG_PAGE_ORDER);
+		} else {
+			pfrag->page = alloc_pages((gfp & ~__GFP_DIRECT_RECLAIM) |
+				__GFP_COMP | __GFP_NOWARN |
+				__GFP_NORETRY,
+				SKB_FRAG_PAGE_ORDER);
+		}
+#else
 		/* Avoid direct reclaim but allow kswapd to wake */
 		pfrag->page = alloc_pages((gfp & ~__GFP_DIRECT_RECLAIM) |
 					  __GFP_COMP | __GFP_NOWARN |
 					  __GFP_NORETRY,
 					  SKB_FRAG_PAGE_ORDER);
+#endif
 		if (likely(pfrag->page)) {
 			pfrag->size = PAGE_SIZE << SKB_FRAG_PAGE_ORDER;
 			return true;
 		}
 	}
+#ifdef CONFIG_CVM_ZEROCOPY
+        if (gfp & ___GFP_FORCE_NID) {
+	        pfrag->page = alloc_pages_node(node, gfp, 0);
+        } else {
+	        pfrag->page = alloc_page(gfp);
+        }
+#else
 	pfrag->page = alloc_page(gfp);
+#endif
 	if (likely(pfrag->page)) {
 		pfrag->size = PAGE_SIZE;
 		return true;
 	}
 	return false;
 }
+#ifdef CONFIG_CVM_ZEROCOPY
+EXPORT_SYMBOL(vdev_skb_page_frag_refill);
+#else
 EXPORT_SYMBOL(skb_page_frag_refill);
+#endif
 
 bool sk_page_frag_refill(struct sock *sk, struct page_frag *pfrag)
 {
+#ifdef CONFIG_CVM_ZEROCOPY
+	if (likely(vdev_skb_page_frag_refill(virtnet_vdev, 32U, pfrag,
+		sk->sk_allocation, NUMA_TX_NODE)))
+#else
 	if (likely(skb_page_frag_refill(32U, pfrag, sk->sk_allocation)))
+#endif
 		return true;
 
 	sk_enter_memory_pressure(sk);

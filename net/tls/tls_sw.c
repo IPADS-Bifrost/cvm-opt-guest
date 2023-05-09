@@ -941,6 +941,9 @@ int tls_sw_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 
 	mutex_lock(&tls_ctx->tx_lock);
 	lock_sock(sk);
+#ifdef CONFIG_CVM_ZEROCOPY
+	sk->sk_allocation |= ___GFP_FORCE_NID;
+#endif
 
 	if (unlikely(msg->msg_controllen)) {
 		ret = tls_process_cmsg(sk, msg, &record_type);
@@ -1155,6 +1158,9 @@ static int tls_sw_do_sendpage(struct sock *sk, struct page *page,
 
 	eor = !(flags & MSG_SENDPAGE_NOTLAST);
 	sk_clear_bit(SOCKWQ_ASYNC_NOSPACE, sk);
+#ifdef CONFIG_CVM_ZEROCOPY
+	sk->sk_allocation |= ___GFP_FORCE_NID;
+#endif
 
 	/* Call the sk_stream functions to manage the sndbuf mem. */
 	while (size > 0) {
@@ -1396,8 +1402,13 @@ tls_alloc_clrtxt_skb(struct sock *sk, struct sk_buff *skb,
 	struct sk_buff *clr_skb;
 	int err;
 
+#ifdef CONFIG_CVM_ZEROCOPY
+	clr_skb = alloc_skb_with_frags(0, full_len, TLS_PAGE_ORDER,
+				       &err, sk->sk_allocation & ~___GFP_FORCE_NID);
+#else
 	clr_skb = alloc_skb_with_frags(0, full_len, TLS_PAGE_ORDER,
 				       &err, sk->sk_allocation);
+#endif
 	if (!clr_skb)
 		return NULL;
 

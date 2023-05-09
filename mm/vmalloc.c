@@ -3119,6 +3119,11 @@ void *__vmalloc_node_range(unsigned long size, unsigned long align,
 	unsigned long real_size = size;
 	unsigned long real_align = align;
 	unsigned int shift = PAGE_SHIFT;
+#ifdef CONFIG_CVM_ZEROCOPY
+	if (node <= 0) {
+		node = 0;
+	}
+#endif
 
 	if (WARN_ON_ONCE(!size))
 		return NULL;

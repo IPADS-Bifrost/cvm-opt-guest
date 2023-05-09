@@ -80,6 +80,15 @@
 #include <linux/user_namespace.h>
 #include <linux/indirect_call_wrapper.h>
 
+#ifdef CONFIG_CVM_ZEROCOPY
+#include <linux/genalloc.h>
+#include <linux/virtio.h>
+#include <linux/memblock.h>
+#include <linux/set_memory.h>
+struct virtio_device;
+extern struct virtio_device *virtnet_vdev;
+#endif
+
 #include "dev.h"
 #include "sock_destructor.h"
 
@@ -338,6 +347,10 @@ struct sk_buff *napi_build_skb(void *data, unsigned int frag_size)
 }
 EXPORT_SYMBOL(napi_build_skb);
 
+#ifdef CONFIG_CVM_ZEROCOPY
+extern struct memblock_region isolate_region[];
+#endif
+
 /*
  * kmalloc_reserve is a wrapper around kmalloc_node_track_caller that tells
  * the caller if emergency pfmemalloc reserves are being used. If it is and
@@ -372,6 +385,29 @@ out:
 	return obj;
 }
 
+#ifdef CONFIG_CVM_ZEROCOPY
+void *kmalloc_reserve_fake_numa(size_t size, gfp_t flags, bool *pfmemalloc, int nid)
+{
+		// return kmalloc_reserve(size, flags, 0, pfmemalloc);
+		void *ret;
+        if (nid <= 0 || nid >= 3) {
+                pr_warn("[%s:%d] failed to find fake numa", __func__, __LINE__);
+                return NULL;
+        }
+		ret = kmalloc_reserve(size, flags | ___GFP_FORCE_NID, isolate_region[nid].nid, pfmemalloc);
+		// set_memory_decrypted(ret, size >> PAGE_SHIFT);
+		return ret;
+}
+EXPORT_SYMBOL(kmalloc_reserve_fake_numa);
+
+void *kmalloc_reserve_wrapper(size_t size, gfp_t flags, bool *pfmemalloc, int nid)
+{
+		
+        return kmalloc_reserve(size, flags, nid, pfmemalloc);
+}
+EXPORT_SYMBOL(kmalloc_reserve_wrapper);
+#endif
+
 /* 	Allocate a new skbuff. We do this ourselves so we can fill in a few
  *	'private' fields and also do memory statistics to find all the
  *	[BEEP] leaks.
@@ -395,8 +431,13 @@ out:
  *	Buffers may only be allocated from interrupts using a @gfp_mask of
  *	%GFP_ATOMIC.
  */
+#ifdef CONFIG_CVM_ZEROCOPY
+struct sk_buff *__vdev_alloc_skb(struct virtio_device *vdev, unsigned int size,
+                gfp_t gfp_mask, int flags, int node)
+#else
 struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 			    int flags, int node)
+#endif
 {
 	struct kmem_cache *cache;
 	struct sk_buff *skb;
@@ -415,7 +456,11 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	    likely(node == NUMA_NO_NODE || node == numa_mem_id()))
 		skb = napi_skb_cache_get();
 	else
+#ifdef CONFIG_CVM_ZEROCOPY
+		skb = kmem_cache_alloc_node(cache, gfp_mask & ~GFP_DMA, 0);
+#else
 		skb = kmem_cache_alloc_node(cache, gfp_mask & ~GFP_DMA, node);
+#endif
 	if (unlikely(!skb))
 		return NULL;
 	prefetchw(skb);
@@ -462,7 +507,11 @@ nodata:
 	kmem_cache_free(cache, skb);
 	return NULL;
 }
+#ifdef CONFIG_CVM_ZEROCOPY
+EXPORT_SYMBOL(__vdev_alloc_skb);
+#else
 EXPORT_SYMBOL(__alloc_skb);
+#endif
 
 /**
  *	__netdev_alloc_skb - allocate an skbuff for rx on a specific device
@@ -4164,9 +4213,21 @@ normal:
 			if (hsize > len || !sg)
 				hsize = len;
 
+#ifdef CONFIG_CVM_ZEROCOPY
+			if ((head_skb->sk != 0) && (head_skb->sk->sk_allocation & ___GFP_FORCE_NID)) {
+				nskb = __vdev_alloc_skb(virtnet_vdev, hsize + doffset + headroom,
+							GFP_ATOMIC | ___GFP_FORCE_NID, skb_alloc_rx_flag(head_skb),
+							NUMA_TX_NODE);
+			} else {
+				nskb = __alloc_skb(hsize + doffset + headroom,
+							GFP_ATOMIC, skb_alloc_rx_flag(head_skb),
+							NUMA_NO_NODE);
+			}
+#else
 			nskb = __alloc_skb(hsize + doffset + headroom,
 					   GFP_ATOMIC, skb_alloc_rx_flag(head_skb),
 					   NUMA_NO_NODE);
+#endif
 
 			if (unlikely(!nskb))
 				goto err;
@@ -6006,6 +6067,9 @@ struct sk_buff *alloc_skb_with_frags(unsigned long header_len,
 	struct sk_buff *skb;
 	struct page *page;
 	int i;
+#ifdef CONFIG_CVM_ZEROCOPY
+	bool force_nid = gfp_mask & ___GFP_FORCE_NID;
+#endif
 
 	*errcode = -EMSGSIZE;
 	/* Note this test could be relaxed, if we succeed to allocate
@@ -6026,10 +6090,23 @@ struct sk_buff *alloc_skb_with_frags(unsigned long header_len,
 
 		while (order) {
 			if (npages >= 1 << order) {
+#ifdef CONFIG_CVM_ZEROCOPY
+				if (force_nid)
+					page = alloc_pages_tx((gfp_mask & ~__GFP_DIRECT_RECLAIM) |
+						   __GFP_COMP |
+						   __GFP_NOWARN,
+						   order);
+				else
+					page = alloc_pages((gfp_mask & ~__GFP_DIRECT_RECLAIM) |
+						   __GFP_COMP |
+						   __GFP_NOWARN,
+						   order);
+#else
 				page = alloc_pages((gfp_mask & ~__GFP_DIRECT_RECLAIM) |
 						   __GFP_COMP |
 						   __GFP_NOWARN,
 						   order);
+#endif
 				if (page)
 					goto fill_page;
 				/* Do not retry other high order allocations */
@@ -6038,7 +6115,14 @@ struct sk_buff *alloc_skb_with_frags(unsigned long header_len,
 			}
 			order--;
 		}
+#ifdef CONFIG_CVM_ZEROCOPY
+		if (force_nid)
+			page = alloc_pages_tx(gfp_mask, 0);
+		else
+			page = alloc_page(gfp_mask);
+#else
 		page = alloc_page(gfp_mask);
+#endif
 		if (!page)
 			goto failure;
 fill_page:

@@ -352,6 +352,14 @@ static dma_addr_t vring_map_one_sg(const struct vring_virtqueue *vq,
 				   struct scatterlist *sg,
 				   enum dma_data_direction direction)
 {
+#ifdef CONFIG_CVM_ZEROCOPY
+	dma_addr_t pa = sg_phys(sg);
+    if (vdev_zc_mempool_has_pa(vq->vq.vdev, pa))
+        return pa;
+    //else if (vq->vq.vdev == virtnet_vdev)
+    //    pr_err("%s:%d --- %llx not from zc_mempool! len %x, dir %d\n",
+    //            __func__, __LINE__, pa, sg->length, direction);
+#endif
 	if (!vq->use_dma_api)
 		return (dma_addr_t)sg_phys(sg);
 
@@ -369,6 +377,14 @@ static dma_addr_t vring_map_single(const struct vring_virtqueue *vq,
 				   void *cpu_addr, size_t size,
 				   enum dma_data_direction direction)
 {
+#ifdef CONFIG_CVM_ZEROCOPY
+	dma_addr_t pa = virt_to_phys(cpu_addr);
+    if (vdev_zc_mempool_has_pa(vq->vq.vdev, pa))
+        return pa;
+    //else if (vq->vq.vdev == virtnet_vdev)
+    //    pr_err("%s:%d --- %llx not from zc_mempool! len %lx, dir %d\n",
+    //            __func__, __LINE__, pa, size, direction);
+#endif
 	if (!vq->use_dma_api)
 		return (dma_addr_t)virt_to_phys(cpu_addr);
 
@@ -413,6 +429,11 @@ static void vring_unmap_one_split_indirect(const struct vring_virtqueue *vq,
 {
 	u16 flags;
 
+#ifdef CONFIG_CVM_ZEROCOPY
+    if (vdev_zc_mempool_has_pa(vq->vq.vdev,
+                virtio64_to_cpu(vq->vq.vdev, desc->addr)))
+        return;
+#endif
 	if (!vq->use_dma_api)
 		return;
 
@@ -431,6 +452,15 @@ static unsigned int vring_unmap_one_split(const struct vring_virtqueue *vq,
 	struct vring_desc_extra *extra = vq->split.desc_extra;
 	u16 flags;
 
+#ifdef CONFIG_CVM_ZEROCOPY
+    if (vdev_zc_mempool_has_pa(vq->vq.vdev, extra[i].addr))
+        goto out;
+    //else if (vq->vq.vdev == virtnet_vdev)
+    //    pr_err("%s:%d --- %llx not from zc_mempool! dir %d\n",
+    //            __func__, __LINE__, extra[i].addr,
+	//		       (extra[i].flags & VRING_DESC_F_WRITE) ?
+	//		       DMA_FROM_DEVICE : DMA_TO_DEVICE);
+#endif
 	if (!vq->use_dma_api)
 		goto out;
 
@@ -2142,6 +2172,17 @@ int virtqueue_add_outbuf(struct virtqueue *vq,
 			 void *data,
 			 gfp_t gfp)
 {
+#ifdef CONFIG_CVM_ZEROCOPY
+	struct scatterlist *sg1;
+	for (sg1 = sg; sg1; sg1 = sg_next(sg1)) {
+		dma_addr_t pa = sg_phys(sg1);
+		if (!vdev_node_has_pa(vq->vdev, pa, NUMA_TX_NODE) &&
+			vq->vdev == virtnet_vdev && sg1->length >= 1000) {
+			/* pr_warn_ratelimited("TX pa %llx not in specific NUMA! line %d sz %d\n", */
+			/* 		pa, __LINE__, sg1->length); */
+		}
+	}
+#endif
 	return virtqueue_add(vq, &sg, num, 1, 0, data, NULL, gfp);
 }
 EXPORT_SYMBOL_GPL(virtqueue_add_outbuf);

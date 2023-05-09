@@ -266,6 +266,18 @@ static inline struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
 	return __alloc_pages_node(nid, gfp_mask, order);
 }
 
+#ifdef CONFIG_CVM_ZEROCOPY
+static inline struct page *alloc_pages_tx(gfp_t gfp_mask, unsigned int order)
+{
+	return __alloc_pages_node(NUMA_TX_NODE, gfp_mask, order);
+}
+
+static inline struct page *alloc_pages_rx(gfp_t gfp_mask, unsigned int order)
+{
+	return __alloc_pages_node(NUMA_RX_NODE, gfp_mask, order);
+}
+#endif
+
 #ifdef CONFIG_NUMA
 struct page *alloc_pages(gfp_t gfp, unsigned int order);
 struct folio *folio_alloc(gfp_t gfp, unsigned order);

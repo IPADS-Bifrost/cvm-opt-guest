@@ -30,7 +30,11 @@ struct folio_batch;
 #define GFP_BOOT_MASK (__GFP_BITS_MASK & ~(__GFP_RECLAIM|__GFP_IO|__GFP_FS))
 
 /* Control allocation cpuset and node placement constraints */
+#ifdef CONFIG_CVM_ZEROCOPY
+#define GFP_CONSTRAINT_MASK (__GFP_HARDWALL|__GFP_THISNODE|___GFP_FORCE_NID)
+#else
 #define GFP_CONSTRAINT_MASK (__GFP_HARDWALL|__GFP_THISNODE)
+#endif
 
 /* Do not use these with a slab allocator */
 #define GFP_SLAB_BUG_MASK (__GFP_DMA32|__GFP_HIGHMEM|~__GFP_BITS_MASK)

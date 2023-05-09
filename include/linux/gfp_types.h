@@ -60,6 +60,10 @@ typedef unsigned int __bitwise gfp_t;
 #else
 #define ___GFP_NOLOCKDEP	0
 #endif
+
+#ifdef CONFIG_CVM_ZEROCOPY
+#define ___GFP_FORCE_NID       0x10000000u
+#endif
 /* If the above are modified, __GFP_BITS_SHIFT may need updating */
 
 /*
@@ -256,7 +260,11 @@ typedef unsigned int __bitwise gfp_t;
 #define __GFP_NOLOCKDEP ((__force gfp_t)___GFP_NOLOCKDEP)
 
 /* Room for N __GFP_FOO bits */
+#ifdef CONFIG_CVM_ZEROCOPY
+#define __GFP_BITS_SHIFT (29 + IS_ENABLED(CONFIG_LOCKDEP))
+#else
 #define __GFP_BITS_SHIFT (27 + IS_ENABLED(CONFIG_LOCKDEP))
+#endif
 #define __GFP_BITS_MASK ((__force gfp_t)((1 << __GFP_BITS_SHIFT) - 1))
 
 /**

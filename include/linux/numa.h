@@ -13,6 +13,11 @@
 
 #define	NUMA_NO_NODE	(-1)
 
+#ifdef CONFIG_CVM_ZEROCOPY
+#define NUMA_RX_NODE	(1)
+#define NUMA_TX_NODE	(2)
+#endif
+
 /* optionally keep NUMA memory info available post init */
 #ifdef CONFIG_NUMA_KEEP_MEMINFO
 #define __initdata_or_meminfo

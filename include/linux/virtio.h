@@ -10,6 +10,11 @@
 #include <linux/mod_devicetable.h>
 #include <linux/gfp.h>
 
+#ifdef CONFIG_CVM_ZEROCOPY
+#include <linux/memblock.h>
+#include <net/sock.h>
+#endif
+
 /**
  * virtqueue - a queue to register buffers for sending or receiving.
  * @list: the chain of virtqueues for this device
@@ -125,7 +130,29 @@ struct virtio_device {
 	struct list_head vqs;
 	u64 features;
 	void *priv;
+#ifdef CONFIG_CVM_ZEROCOPY
+    void *zc_mempool_va;
+    struct gen_pool *zc_mempool;
+#endif
 };
+#ifdef CONFIG_CVM_ZEROCOPY
+extern struct virtio_device *virtnet_vdev;
+extern struct memblock_region isolate_region[];
+
+static inline bool vdev_node_has_pa(struct virtio_device *vdev,
+            phys_addr_t pa, int node)
+{
+    phys_addr_t start = isolate_region[node].base;
+    size_t size = isolate_region[node].size;
+    return vdev ? start <= pa && pa < (start + size) : false;
+}
+
+static inline bool vdev_zc_mempool_has_pa(struct virtio_device *vdev,
+            phys_addr_t pa)
+{
+	return vdev_node_has_pa(vdev, pa, NUMA_RX_NODE) || vdev_node_has_pa(vdev, pa, NUMA_TX_NODE);
+}
+#endif
 
 static inline struct virtio_device *dev_to_virtio(struct device *_dev)
 {

@@ -30,3 +30,7 @@ source "lib/Kconfig"
 source "lib/Kconfig.debug"
 
 source "Documentation/Kconfig"
+
+config CVM_ZEROCOPY
+    bool "Zero-copy optimization for CVM"
+    default y

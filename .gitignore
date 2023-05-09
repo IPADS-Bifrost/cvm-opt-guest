@@ -116,6 +116,8 @@ series
 # ctags files
 tags
 TAGS
+tags.lock
+tags.temp
 
 # cscope files
 cscope.*

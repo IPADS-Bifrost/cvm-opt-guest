@@ -186,6 +186,14 @@ DEFINE_STATIC_KEY_FALSE(slub_debug_enabled);
 #endif
 #endif		/* CONFIG_SLUB_DEBUG */
 
+#ifdef CONFIG_CVM_ZEROCOPY
+#include <linux/memblock.h>
+extern struct memblock_region isolate_region[];
+static inline bool fall_in_fake_node(int nid) {
+	return nid > 0 && nid < 3;
+}
+#endif
+
 static inline bool kmem_cache_debug(struct kmem_cache *s)
 {
 	return kmem_cache_debug_flags(s, SLAB_DEBUG_FLAGS);
@@ -2250,6 +2258,13 @@ static void *get_any_partial(struct kmem_cache *s, gfp_t flags,
 		for_each_zone_zonelist(zone, z, zonelist, highest_zoneidx) {
 			struct kmem_cache_node *n;
 
+#ifdef CONFIG_CVM_ZEROCOPY
+                        /**
+                         * disallow unfake numa node fall back to fake numa node
+                         */
+                        if (fall_in_fake_node(zone_to_nid(zone)))
+                                continue;
+#endif
 			n = get_node(s, zone_to_nid(zone));
 
 			if (n && cpuset_zone_allowed(zone, flags) &&
@@ -2287,6 +2302,16 @@ static void *get_partial(struct kmem_cache *s, gfp_t flags, int node,
 	object = get_partial_node(s, get_node(s, searchnode), ret_slab, flags);
 	if (object || node != NUMA_NO_NODE)
 		return object;
+
+#ifdef CONFIG_CVM_ZEROCOPY
+        if (fall_in_fake_node(node)) {
+#if 1
+                pr_info("[%s:%d] cancel get_any_partial because of fake numa id",
+                                __func__, __LINE__);
+#endif
+                return NULL;
+        }
+#endif
 
 	return get_any_partial(s, flags, ret_slab);
 }
@@ -2910,6 +2935,16 @@ static void *___slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
 	void *freelist;
 	struct slab *slab;
 	unsigned long flags;
+#ifdef CONFIG_CVM_ZEROCOPY
+	if ((node == NUMA_TX_NODE || node == NUMA_RX_NODE) &&
+		!(gfpflags & ___GFP_FORCE_NID)) {
+		node = 0;
+	}
+	if ((node != NUMA_TX_NODE && node != NUMA_RX_NODE) &&
+		(gfpflags & ___GFP_FORCE_NID)) {
+		// pr_err("Allocate flag force_nid but node is %d\n", node);
+	}
+#endif
 
 	stat(s, ALLOC_SLOWPATH);
 
@@ -3153,6 +3188,16 @@ static __always_inline void *slab_alloc_node(struct kmem_cache *s, struct list_l
 	unsigned long tid;
 	struct obj_cgroup *objcg = NULL;
 	bool init = false;
+#ifdef CONFIG_CVM_ZEROCOPY
+	if ((node == NUMA_TX_NODE || node == NUMA_RX_NODE) &&
+		!(gfpflags & ___GFP_FORCE_NID)) {
+		node = 0;
+	}
+	if ((node != NUMA_TX_NODE && node != NUMA_RX_NODE) &&
+		(gfpflags & ___GFP_FORCE_NID)) {
+		// pr_err("Allocate flag force_nid but node is %d\n", node);
+	}
+#endif
 
 	s = slab_pre_alloc_hook(s, lru, &objcg, 1, gfpflags);
 	if (!s)
@@ -4542,6 +4587,9 @@ size_t __ksize(const void *object)
 }
 EXPORT_SYMBOL(__ksize);
 
+#ifdef CONFIG_CVM_ZEROCOPY
+#include <linux/virtio.h>
+#endif
 void kfree(const void *x)
 {
 	struct folio *folio;
@@ -4936,6 +4984,16 @@ void *__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
 {
 	struct kmem_cache *s;
 	void *ret;
+#ifdef CONFIG_CVM_ZEROCOPY
+	if ((node == NUMA_TX_NODE || node == NUMA_RX_NODE) &&
+		!(gfpflags & ___GFP_FORCE_NID)) {
+		node = 0;
+	}
+	if ((node != NUMA_TX_NODE && node != NUMA_RX_NODE) &&
+		(gfpflags & ___GFP_FORCE_NID)) {
+		// pr_err("Allocate flag force_nid but node is %d\n", node);
+	}
+#endif
 
 	if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
 		ret = kmalloc_large_node(size, gfpflags, node);
