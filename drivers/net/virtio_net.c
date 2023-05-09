@@ -489,7 +489,6 @@ static struct sk_buff *page_to_skb(struct virtnet_info *vi,
 
 	shinfo_size = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 
-#ifndef CONFIG_CVM_ZEROCOPY
 	/* copy small packet so we can reuse these pages */
 	if (!NET_IP_ALIGN && len > GOOD_COPY_LEN && tailroom >= shinfo_size) {
 		skb = build_skb(buf, truesize);
@@ -504,7 +503,6 @@ static struct sk_buff *page_to_skb(struct virtnet_info *vi,
 			give_pages(rq, page);
 		goto ok;
 	}
-#endif
 
 	/* copy small packet so we can reuse these pages for small data */
 	skb = napi_alloc_skb(&rq->napi, GOOD_COPY_LEN);

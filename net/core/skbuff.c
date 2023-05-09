@@ -472,7 +472,15 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	 */
 	size = SKB_DATA_ALIGN(size);
 	size += SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+#ifdef CONFIG_CVM_ZEROCOPY
+	if ((vdev != NULL) && (gfp_mask & ___GFP_FORCE_NID)) {
+		data = kmalloc_reserve_fake_numa(size, gfp_mask, &pfmemalloc, node);
+	} else {
+		data = kmalloc_reserve(size, gfp_mask, node, &pfmemalloc);
+	}
+#else
 	data = kmalloc_reserve(size, gfp_mask, node, &pfmemalloc);
+#endif
 	if (unlikely(!data))
 		goto nodata;
 	/* kmalloc(size) might give us more room than requested.
