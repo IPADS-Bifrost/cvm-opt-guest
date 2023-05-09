@@ -1250,6 +1250,10 @@ static void virtio_skb_set_hash(const struct virtio_net_hdr_v1_hash *hdr_hash,
 	skb_set_hash(skb, (unsigned int)hdr_hash->hash_value, rss_hash_type);
 }
 
+extern bool record_en;
+#define VCPU_NR 64
+uint64_t gro_cycles[VCPU_NR];
+EXPORT_SYMBOL_GPL(gro_cycles);
 static void receive_buf(struct virtnet_info *vi, struct receive_queue *rq,
 			void *buf, unsigned int len, void **ctx,
 			unsigned int *xdp_xmit,
@@ -1258,6 +1262,8 @@ static void receive_buf(struct virtnet_info *vi, struct receive_queue *rq,
 	struct net_device *dev = vi->dev;
 	struct sk_buff *skb;
 	struct virtio_net_hdr_mrg_rxbuf *hdr;
+	bool e = false;
+	uint64_t st, en;
 
 	if (unlikely(len < vi->hdr_len + ETH_HLEN)) {
 		pr_debug("%s: short packet %i\n", dev->name, len);
@@ -1303,7 +1309,16 @@ static void receive_buf(struct virtnet_info *vi, struct receive_queue *rq,
 	pr_debug("Receiving skb proto 0x%04x len %i type %i\n",
 		 ntohs(skb->protocol), skb->len, skb->pkt_type);
 
+	if (e) {
+		st = rdtsc_ordered();
+	}
 	napi_gro_receive(&rq->napi, skb);
+	if (e) {
+		int x = smp_processor_id();
+		en = rdtsc_ordered();
+		// atomic64_add(en - st, &gro_cycles[x % VCPU_NR]);
+		gro_cycles[x % VCPU_NR] += en - st;
+	}
 	return;
 
 frame_err:

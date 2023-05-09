@@ -507,6 +507,12 @@ static unsigned int swiotlb_align_offset(struct device *dev, u64 addr)
 /*
  * Bounce: copy the swiotlb buffer from or back to the original dma location
  */
+#define VCPU_NR (64)
+uint64_t swiotlb_memcpy_cycles[VCPU_NR];
+uint64_t swiotlb_memcpy_count[VCPU_NR];
+extern bool record_en;
+EXPORT_SYMBOL_GPL(swiotlb_memcpy_cycles);
+EXPORT_SYMBOL_GPL(swiotlb_memcpy_count);
 static void swiotlb_bounce(struct device *dev, phys_addr_t tlb_addr, size_t size,
 			   enum dma_data_direction dir)
 {
@@ -517,7 +523,13 @@ static void swiotlb_bounce(struct device *dev, phys_addr_t tlb_addr, size_t size
 	unsigned long pfn = PFN_DOWN(orig_addr);
 	unsigned char *vaddr = mem->vaddr + tlb_addr - mem->start;
 	unsigned int tlb_offset, orig_addr_offset;
-
+	bool local_record_en = record_en;
+	uint64_t st, en;
+	int x = 0;	
+	if (local_record_en) {
+		x = smp_processor_id() % VCPU_NR;
+		st = rdtsc_ordered();
+	}
 	if (orig_addr == INVALID_PHYS_ADDR)
 		return;
 
@@ -577,6 +589,19 @@ static void swiotlb_bounce(struct device *dev, phys_addr_t tlb_addr, size_t size
 	} else {
 		memcpy(phys_to_virt(orig_addr), vaddr, size);
 	}
+
+	if (local_record_en) {
+		en = rdtsc_ordered();
+		// atomic64_inc(&tx_map_count[x]);
+		// atomic64_add(en - st, &tx_map_cycles[x]);
+		// if (size >= 4096) {
+		// 	swiotlb_memcpy_count[x]++;
+		// } else {
+		// 	swiotlb_memcpy_cycles[x]++;
+		// }
+		swiotlb_memcpy_count[x]++;
+		swiotlb_memcpy_cycles[x] += en - st;
+	}
 }
 
 #define slot_addr(start, idx)	((start) + ((idx) << IO_TLB_SHIFT))
@@ -602,6 +627,12 @@ static unsigned int wrap_area_index(struct io_tlb_mem *mem, unsigned int index)
  * Find a suitable number of IO TLB entries size that will fit this request and
  * allocate a buffer from that IO TLB pool.
  */
+
+uint64_t swiotlb_find_cycles[VCPU_NR];
+uint64_t swiotlb_find_count[VCPU_NR];
+extern bool record_en;
+EXPORT_SYMBOL_GPL(swiotlb_find_cycles);
+EXPORT_SYMBOL_GPL(swiotlb_find_count);
 static int swiotlb_do_find_slots(struct device *dev, int area_index,
 		phys_addr_t orig_addr, size_t alloc_size,
 		unsigned int alloc_align_mask)
@@ -698,12 +729,28 @@ static int swiotlb_find_slots(struct device *dev, phys_addr_t orig_addr,
 	struct io_tlb_mem *mem = dev->dma_io_tlb_mem;
 	int start = raw_smp_processor_id() & (mem->nareas - 1);
 	int i = start, index;
+	bool local_record_en = record_en;
+	uint64_t st, en;
+	int x = 0;	
+	if (local_record_en) {
+		x = smp_processor_id() % VCPU_NR;
+		st = rdtsc_ordered();
+	}
 
 	do {
 		index = swiotlb_do_find_slots(dev, i, orig_addr, alloc_size,
 					      alloc_align_mask);
-		if (index >= 0)
+		if (index >= 0) {
+			if (local_record_en) {
+				en = rdtsc_ordered();
+				// atomic64_inc(&tx_map_count[x]);
+				// atomic64_add(en - st, &tx_map_cycles[x]);
+				swiotlb_find_count[x]++;
+				swiotlb_find_cycles[x] += en - st;
+			}
 			return index;
+		}
+			
 		if (++i >= mem->nareas)
 			i = 0;
 	} while (i != start);
@@ -772,7 +819,11 @@ phys_addr_t swiotlb_tbl_map_single(struct device *dev, phys_addr_t orig_addr,
 	swiotlb_bounce(dev, tlb_addr, mapping_size, DMA_TO_DEVICE);
 	return tlb_addr;
 }
-
+uint64_t swiotlb_release_cycles[VCPU_NR];
+uint64_t swiotlb_release_count[VCPU_NR];
+extern bool record_en;
+EXPORT_SYMBOL_GPL(swiotlb_release_cycles);
+EXPORT_SYMBOL_GPL(swiotlb_release_count);
 static void swiotlb_release_slots(struct device *dev, phys_addr_t tlb_addr)
 {
 	struct io_tlb_mem *mem = dev->dma_io_tlb_mem;
@@ -783,6 +834,13 @@ static void swiotlb_release_slots(struct device *dev, phys_addr_t tlb_addr)
 	int aindex = index / mem->area_nslabs;
 	struct io_tlb_area *area = &mem->areas[aindex];
 	int count, i;
+	bool local_record_en = record_en;
+	uint64_t st, en;
+	int x = 0;	
+	if (local_record_en) {
+		x = smp_processor_id() % VCPU_NR;
+		st = rdtsc_ordered();
+	}
 
 	/*
 	 * Return the buffer to the free list by setting the corresponding
@@ -818,7 +876,25 @@ static void swiotlb_release_slots(struct device *dev, phys_addr_t tlb_addr)
 		mem->slots[i].list = ++count;
 	area->used -= nslots;
 	spin_unlock_irqrestore(&area->lock, flags);
+	if (local_record_en) {
+		en = rdtsc_ordered();
+		// atomic64_inc(&tx_map_count[x]);
+		// atomic64_add(en - st, &tx_map_cycles[x]);
+		swiotlb_release_count[x]++;
+		swiotlb_release_cycles[x] += en - st;
+	}
 }
+
+extern bool record_en;
+uint64_t swiotlb_rx_cycles[VCPU_NR];
+uint64_t swiotlb_rx_count[VCPU_NR];
+EXPORT_SYMBOL_GPL(swiotlb_rx_cycles);
+EXPORT_SYMBOL_GPL(swiotlb_rx_count);
+extern bool record_en;
+uint64_t swiotlb_tx_cycles[VCPU_NR];
+uint64_t swiotlb_tx_count[VCPU_NR];
+EXPORT_SYMBOL_GPL(swiotlb_tx_cycles);
+EXPORT_SYMBOL_GPL(swiotlb_tx_count);
 
 /*
  * tlb_addr is the physical address of the bounce buffer to unmap.
@@ -830,30 +906,94 @@ void swiotlb_tbl_unmap_single(struct device *dev, phys_addr_t tlb_addr,
 	/*
 	 * First, sync the memory before unmapping the entry
 	 */
+	bool local_record_en = false;
+	uint64_t st, en;
+	int x = 0;	
+	if (local_record_en) {
+		x = smp_processor_id() % VCPU_NR;
+		st = rdtsc_ordered();
+	}
 	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC) &&
 	    (dir == DMA_FROM_DEVICE || dir == DMA_BIDIRECTIONAL))
 		swiotlb_bounce(dev, tlb_addr, mapping_size, DMA_FROM_DEVICE);
 
 	swiotlb_release_slots(dev, tlb_addr);
+	if (local_record_en) {
+		en = rdtsc_ordered();
+		// atomic64_inc(&tx_map_count[x]);
+		// atomic64_add(en - st, &tx_map_cycles[x]);
+		if (dir == DMA_FROM_DEVICE) {
+			swiotlb_rx_count[x]++;
+			swiotlb_rx_cycles[x] += en - st;
+		} else if (dir == DMA_TO_DEVICE) {
+			swiotlb_tx_count[x]++;
+			swiotlb_tx_cycles[x] += en - st;
+		} else {
+			pr_warn_ratelimited("Unexpected Direction %d\n", dir);
+		}
+	}
 }
 
 void swiotlb_sync_single_for_device(struct device *dev, phys_addr_t tlb_addr,
 		size_t size, enum dma_data_direction dir)
 {
+	bool local_record_en = false;
+	uint64_t st, en;
+	int x = 0;	
+	if (local_record_en) {
+		x = smp_processor_id() % VCPU_NR;
+		st = rdtsc_ordered();
+	}
 	if (dir == DMA_TO_DEVICE || dir == DMA_BIDIRECTIONAL)
 		swiotlb_bounce(dev, tlb_addr, size, DMA_TO_DEVICE);
 	else
 		BUG_ON(dir != DMA_FROM_DEVICE);
+	if (local_record_en) {
+		en = rdtsc_ordered();
+		// atomic64_inc(&tx_map_count[x]);
+		// atomic64_add(en - st, &tx_map_cycles[x]);
+		if (dir == DMA_FROM_DEVICE) {
+			swiotlb_rx_count[x]++;
+			swiotlb_rx_cycles[x] += en - st;
+		} else if (dir == DMA_TO_DEVICE) {
+			swiotlb_tx_count[x]++;
+			swiotlb_tx_cycles[x] += en - st;
+		} else {
+			pr_warn_ratelimited("Unexpected Direction %d\n", dir);
+		}
+	}
 }
 
 void swiotlb_sync_single_for_cpu(struct device *dev, phys_addr_t tlb_addr,
 		size_t size, enum dma_data_direction dir)
 {
+	bool local_record_en = false;
+	uint64_t st, en;
+	int x = 0;	
+	if (local_record_en) {
+		x = smp_processor_id() % VCPU_NR;
+		st = rdtsc_ordered();
+	}
 	if (dir == DMA_FROM_DEVICE || dir == DMA_BIDIRECTIONAL)
 		swiotlb_bounce(dev, tlb_addr, size, DMA_FROM_DEVICE);
 	else
 		BUG_ON(dir != DMA_TO_DEVICE);
+	if (local_record_en) {
+		en = rdtsc_ordered();
+		// atomic64_inc(&tx_map_count[x]);
+		// atomic64_add(en - st, &tx_map_cycles[x]);
+		if (dir == DMA_FROM_DEVICE) {
+			swiotlb_rx_count[x]++;
+			swiotlb_rx_cycles[x] += en - st;
+		} else if (dir == DMA_TO_DEVICE) {
+			swiotlb_tx_count[x]++;
+			swiotlb_tx_cycles[x] += en - st;
+		} else {
+			pr_warn_ratelimited("Unexpected Direction %d\n", dir);
+		}
+	}
 }
+
 
 /*
  * Create a swiotlb mapping for the buffer at @paddr, and in case of DMAing
@@ -866,6 +1006,13 @@ dma_addr_t swiotlb_map(struct device *dev, phys_addr_t paddr, size_t size,
 	dma_addr_t dma_addr;
 
 	trace_swiotlb_bounced(dev, phys_to_dma(dev, paddr), size);
+	bool local_record_en = false;
+	uint64_t st, en;
+	int x = 0;	
+	if (local_record_en) {
+		x = smp_processor_id() % VCPU_NR;
+		st = rdtsc_ordered();
+	}
 
 	swiotlb_addr = swiotlb_tbl_map_single(dev, paddr, size, size, 0, dir,
 			attrs);
@@ -885,6 +1032,21 @@ dma_addr_t swiotlb_map(struct device *dev, phys_addr_t paddr, size_t size,
 
 	if (!dev_is_dma_coherent(dev) && !(attrs & DMA_ATTR_SKIP_CPU_SYNC))
 		arch_sync_dma_for_device(swiotlb_addr, size, dir);
+
+	if (local_record_en) {
+		en = rdtsc_ordered();
+		// atomic64_inc(&tx_map_count[x]);
+		// atomic64_add(en - st, &tx_map_cycles[x]);
+		if (dir == DMA_FROM_DEVICE) {
+			swiotlb_rx_count[x]++;
+			swiotlb_rx_cycles[x] += en - st;
+		} else if (dir == DMA_TO_DEVICE) {
+			swiotlb_tx_count[x]++;
+			swiotlb_tx_cycles[x] += en - st;
+		} else {
+			pr_warn_ratelimited("Unexpected Direction %d\n", dir);
+		}
+	}
 	return dma_addr;
 }
 

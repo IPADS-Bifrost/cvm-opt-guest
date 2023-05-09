@@ -6660,7 +6660,15 @@ static void skb_defer_free_flush(struct softnet_data *sd)
 		skb = next;
 	}
 }
-
+#define VCPU_NR 64
+uint64_t netrx_count[VCPU_NR];
+uint64_t netrx_cycles[VCPU_NR];
+EXPORT_SYMBOL_GPL(netrx_count);
+EXPORT_SYMBOL_GPL(netrx_cycles);
+bool record_en;
+EXPORT_SYMBOL_GPL(record_en);
+uint64_t breakdown_st;
+EXPORT_SYMBOL_GPL(breakdown_st);
 static __latent_entropy void net_rx_action(struct softirq_action *h)
 {
 	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
@@ -6669,6 +6677,11 @@ static __latent_entropy void net_rx_action(struct softirq_action *h)
 	int budget = netdev_budget;
 	LIST_HEAD(list);
 	LIST_HEAD(repoll);
+	uint64_t st = 0, en = 0;
+	bool local_record_en = record_en;
+	if (local_record_en) {
+		st = rdtsc_ordered();
+	}
 
 	local_irq_disable();
 	list_splice_init(&sd->poll_list, &list);
@@ -6709,6 +6722,14 @@ static __latent_entropy void net_rx_action(struct softirq_action *h)
 
 	net_rps_action_and_irq_enable(sd);
 end:;
+	if (local_record_en) {
+		int x = smp_processor_id() % VCPU_NR;
+		en = rdtsc_ordered();
+		// atomic64_inc(&netrx_count[x]);
+		// atomic64_add(en - st, &netrx_cycles[x]);
+		netrx_count[x]++;
+		netrx_cycles[x] += en - st;
+	}
 }
 
 struct netdev_adjacent {

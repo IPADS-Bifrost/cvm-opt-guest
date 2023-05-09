@@ -137,3 +137,4 @@ obj-$(CONFIG_SHRINKER_DEBUG) += shrinker_debug.o
 ifdef CONFIG_KUNIT
 	obj-$(CONFIG_CVM_ZEROCOPY) += slub_test.o
 endif
+obj-m += breakdown.o

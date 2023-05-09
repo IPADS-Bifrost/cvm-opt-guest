@@ -445,12 +445,22 @@ static void vring_unmap_one_split_indirect(const struct vring_virtqueue *vq,
 		       (flags & VRING_DESC_F_WRITE) ?
 		       DMA_FROM_DEVICE : DMA_TO_DEVICE);
 }
-
+#define VCPU_NR 64
+extern bool record_en;
+uint64_t unmap_cycles[VCPU_NR];
+uint64_t unmap_count[VCPU_NR];
+EXPORT_SYMBOL_GPL(unmap_count);
+EXPORT_SYMBOL_GPL(unmap_cycles);
 static unsigned int vring_unmap_one_split(const struct vring_virtqueue *vq,
 					  unsigned int i)
 {
 	struct vring_desc_extra *extra = vq->split.desc_extra;
 	u16 flags;
+	bool e = false;
+	uint64_t st, en;
+	if (e) {
+		st = rdtsc_ordered();
+	}
 
 #ifdef CONFIG_CVM_ZEROCOPY
     if (vdev_zc_mempool_has_pa(vq->vq.vdev, extra[i].addr))
@@ -481,6 +491,14 @@ static unsigned int vring_unmap_one_split(const struct vring_virtqueue *vq,
 	}
 
 out:
+	if (e) {
+		int x = smp_processor_id() % VCPU_NR;
+		en = rdtsc_ordered();
+		// atomic64_inc(&unmap_count[x]);
+		// atomic64_add(en - st, &unmap_cycles[x]);
+		unmap_count[x]++;
+		unmap_cycles[x] += en - st;
+	}
 	return extra[i].next;
 }
 
@@ -536,6 +554,14 @@ static inline unsigned int virtqueue_add_desc_split(struct virtqueue *vq,
 	return next;
 }
 
+extern bool record_en;
+uint64_t rx_map_cycles[VCPU_NR], tx_map_cycles[VCPU_NR];
+uint64_t rx_map_count[VCPU_NR], tx_map_count[VCPU_NR];
+EXPORT_SYMBOL_GPL(rx_map_count);
+EXPORT_SYMBOL_GPL(tx_map_count);
+EXPORT_SYMBOL_GPL(rx_map_cycles);
+EXPORT_SYMBOL_GPL(tx_map_cycles);
+
 static inline int virtqueue_add_split(struct virtqueue *_vq,
 				      struct scatterlist *sgs[],
 				      unsigned int total_sg,
@@ -551,6 +577,11 @@ static inline int virtqueue_add_split(struct virtqueue *_vq,
 	unsigned int i, n, avail, descs_used, prev, err_idx;
 	int head;
 	bool indirect;
+	bool local_record_en = false;
+	uint64_t st, en;
+	int x = 0;
+	if (local_record_en)
+		x = smp_processor_id() % VCPU_NR;
 
 	START_USE(vq);
 
@@ -604,7 +635,18 @@ static inline int virtqueue_add_split(struct virtqueue *_vq,
 
 	for (n = 0; n < out_sgs; n++) {
 		for (sg = sgs[n]; sg; sg = sg_next(sg)) {
-			dma_addr_t addr = vring_map_one_sg(vq, sg, DMA_TO_DEVICE);
+			dma_addr_t addr;
+			if (local_record_en) {
+				st = rdtsc_ordered();
+			}
+			addr = vring_map_one_sg(vq, sg, DMA_TO_DEVICE);
+			if (local_record_en) {
+				en = rdtsc_ordered();
+				// atomic64_inc(&tx_map_count[x]);
+				// atomic64_add(en - st, &tx_map_cycles[x]);
+				tx_map_count[x]++;
+				tx_map_cycles[x] += en - st;
+			}
 			if (vring_mapping_error(vq, addr))
 				goto unmap_release;
 
@@ -619,7 +661,18 @@ static inline int virtqueue_add_split(struct virtqueue *_vq,
 	}
 	for (; n < (out_sgs + in_sgs); n++) {
 		for (sg = sgs[n]; sg; sg = sg_next(sg)) {
-			dma_addr_t addr = vring_map_one_sg(vq, sg, DMA_FROM_DEVICE);
+			dma_addr_t addr;
+			if (local_record_en) {
+				st = rdtsc_ordered();
+			}
+			addr = vring_map_one_sg(vq, sg, DMA_FROM_DEVICE);
+			if (local_record_en) {
+				en = rdtsc_ordered();
+				// atomic64_inc(&rx_map_count[x]);
+				// atomic64_add(en - st, &rx_map_cycles[x]);
+				rx_map_count[x]++;
+				rx_map_cycles[x] += en - st;
+			}
 			if (vring_mapping_error(vq, addr))
 				goto unmap_release;
 
@@ -642,9 +695,20 @@ static inline int virtqueue_add_split(struct virtqueue *_vq,
 
 	if (indirect) {
 		/* Now that the indirect table is filled in, map it. */
-		dma_addr_t addr = vring_map_single(
+		dma_addr_t addr;
+		if (local_record_en) {
+			st = rdtsc_ordered();
+		}
+		addr = vring_map_single(
 			vq, desc, total_sg * sizeof(struct vring_desc),
 			DMA_TO_DEVICE);
+		if (local_record_en) {
+			en = rdtsc_ordered();
+			// atomic64_inc(&tx_map_count[x]);
+			// atomic64_add(en - st, &tx_map_cycles[x]);
+			tx_map_count[x]++;
+			tx_map_cycles[x] += en - st;
+		}
 		if (vring_mapping_error(vq, addr))
 			goto unmap_release;
 
@@ -2175,12 +2239,14 @@ int virtqueue_add_outbuf(struct virtqueue *vq,
 #ifdef CONFIG_CVM_ZEROCOPY
 	struct scatterlist *sg1;
 	for (sg1 = sg; sg1; sg1 = sg_next(sg1)) {
+#ifdef CONFIG_CVM_ZEROCOPY
 		dma_addr_t pa = sg_phys(sg1);
 		if (!vdev_node_has_pa(vq->vdev, pa, NUMA_TX_NODE) &&
 			vq->vdev == virtnet_vdev && sg1->length >= 1000) {
 			/* pr_warn_ratelimited("TX pa %llx not in specific NUMA! line %d sz %d\n", */
 			/* 		pa, __LINE__, sg1->length); */
 		}
+#endif
 	}
 #endif
 	return virtqueue_add(vq, &sg, num, 1, 0, data, NULL, gfp);

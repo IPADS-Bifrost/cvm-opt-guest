@@ -1033,7 +1033,12 @@ new_segment:
 	*size = copy;
 	return skb;
 }
-
+#define VCPU_NR (64)
+extern bool record_en;
+atomic64_t tcp_send_cycles[VCPU_NR];
+atomic64_t tcp_send_count[VCPU_NR];
+EXPORT_SYMBOL_GPL(tcp_send_cycles);
+EXPORT_SYMBOL_GPL(tcp_send_count);
 ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
 			 size_t size, int flags)
 {
@@ -1042,6 +1047,13 @@ ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
 	int err;
 	ssize_t copied;
 	long timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
+	bool local_record_en = record_en;
+	uint64_t st, en;
+	int x = 0;	
+	if (local_record_en) {
+		x = 0;
+		st = rdtsc_ordered();
+	}
 
 	if (IS_ENABLED(CONFIG_DEBUG_VM) &&
 	    WARN_ONCE(!sendpage_ok(page),
@@ -1112,6 +1124,13 @@ out:
 		tcp_tx_timestamp(sk, sk->sk_tsflags);
 		if (!(flags & MSG_SENDPAGE_NOTLAST))
 			tcp_push(sk, flags, mss_now, tp->nonagle, size_goal);
+	}
+	if (local_record_en) {
+		en = rdtsc_ordered();
+		// atomic64_inc(&tx_map_count[x]);
+		// atomic64_add(en - st, &tx_map_cycles[x]);
+		atomic64_inc(&tcp_send_count[x]);
+		atomic64_add(en - st, &tcp_send_cycles[x]);
 	}
 	return copied;
 
