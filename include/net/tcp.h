@@ -1382,8 +1382,12 @@ static inline __sum16 tcp_v4_check(int len, __be32 saddr,
 
 static inline bool tcp_checksum_complete(struct sk_buff *skb)
 {
+#ifdef CONFIG_CVM_PRPR
+    return false;
+#else
 	return !skb_csum_unnecessary(skb) &&
 		__skb_checksum_complete(skb);
+#endif
 }
 
 bool tcp_add_backlog(struct sock *sk, struct sk_buff *skb,

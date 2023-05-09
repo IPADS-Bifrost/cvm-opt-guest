@@ -34,3 +34,7 @@ source "Documentation/Kconfig"
 config CVM_ZEROCOPY
     bool "Zero-copy optimization for CVM"
     default y
+
+config CVM_PRPR
+    bool "PRPR optimization for CVM"
+    default y
