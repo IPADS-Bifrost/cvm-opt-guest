@@ -30,3 +30,7 @@ source "lib/Kconfig"
 source "lib/Kconfig.debug"
 
 source "Documentation/Kconfig"
+
+config CVM_PRPR
+    bool "PRPR optimization for CVM"
+    default y

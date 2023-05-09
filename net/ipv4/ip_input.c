@@ -503,9 +503,10 @@ static struct sk_buff *ip_rcv_core(struct sk_buff *skb, struct net *net)
 
 	iph = ip_hdr(skb);
 
-    // ignore ip checksum
-	// if (unlikely(ip_fast_csum((u8 *)iph, iph->ihl)))
-	// 	goto csum_error;
+#ifndef CONFIG_CVM_PRPR
+	if (unlikely(ip_fast_csum((u8 *)iph, iph->ihl)))
+		goto csum_error;
+#endif
 
 	len = ntohs(iph->tot_len);
 	if (skb->len < len) {
